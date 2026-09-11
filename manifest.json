@@ -27,6 +27,7 @@
     "alarms",
     "storage",
     "notifications",
+    "offscreen",
     "activeTab",
     "scripting"
   ],

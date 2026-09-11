@@ -8,7 +8,7 @@ set -euo pipefail
 rm -rf dist
 mkdir -p dist/chrome dist/firefox
 
-SHARED=(css fonts img js LICENSE options.html popup.html)
+SHARED=(css fonts img js sounds LICENSE offscreen.html options.html popup.html toast.html)
 
 cp -r "${SHARED[@]}" dist/chrome
 cp manifest.json dist/chrome/manifest.json

@@ -1,0 +1,114 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Jenkins build</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #ffffff;
+      --fg: #1c1c1e;
+      --muted: #6b6b70;
+      --line: #e2e2e6;
+      --accent: #777777;
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #1f2023;
+        --fg: #f2f2f5;
+        --muted: #a0a0a8;
+        --line: #35363a;
+      }
+    }
+
+    html, body {
+      margin: 0;
+      height: 100%;
+    }
+
+    body {
+      display: flex;
+      flex-direction: column;
+      background: var(--bg);
+      color: var(--fg);
+      font: 13px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+      cursor: pointer;
+      user-select: none;
+    }
+
+    .accent {
+      height: 5px;
+      background: var(--accent);
+      flex: none;
+    }
+
+    main {
+      padding: 12px 14px;
+      flex: 1;
+      overflow: hidden;
+    }
+
+    h1 {
+      margin: 0 0 2px;
+      font-size: 14px;
+      font-weight: 600;
+    }
+
+    .job {
+      margin: 0 0 6px;
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--accent);
+      overflow-wrap: anywhere;
+    }
+
+    .url {
+      margin: 0;
+      color: var(--muted);
+      font-size: 11px;
+      overflow-wrap: anywhere;
+    }
+
+    .note {
+      margin: 6px 0 0;
+      color: var(--muted);
+      font-size: 11px;
+    }
+
+    footer {
+      flex: none;
+      border-top: 1px solid var(--line);
+      padding: 6px 14px;
+      color: var(--muted);
+      font-size: 11px;
+      display: flex;
+      justify-content: space-between;
+      gap: 8px;
+    }
+
+    .bar {
+      height: 3px;
+      background: var(--accent);
+      flex: none;
+      width: 100%;
+      transition: width 250ms linear;
+    }
+  </style>
+</head>
+<body>
+<div class="accent" id="accent"></div>
+<main>
+  <h1 id="status">Build</h1>
+  <p class="job" id="job"></p>
+  <p class="url" id="url"></p>
+  <p class="note" id="note"></p>
+</main>
+<footer>
+  <span>Click to open the build</span>
+  <span id="count"></span>
+</footer>
+<div class="bar" id="bar"></div>
+<script src="js/toast.js"></script>
+</body>
+</html>
