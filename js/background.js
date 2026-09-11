@@ -56,7 +56,7 @@ Services.init().catch(error => {
     console.error('Error initializing services:', error);
 });
 
-const { $rootScope, Jobs, $q, buildWatcher, buildNotifier, jenkins } = Services;
+const { $rootScope, Jobs, $q, buildWatcher, buildNotifier, jenkins, BuildWatches, buildWatchNotifier, jenkinsBuild } = Services;
 
 const UPDATE_ALARM = 'update-jobs';
 const DEFAULT_REFRESH_TIME = 60;
@@ -217,11 +217,26 @@ async function updateJobs() {
     try {
         console.log('Updating all jobs...');
         const statusPromises = await Jobs.updateAllStatus();
-        const results = await Promise.all(statusPromises);
+        await Promise.all(statusPromises);
         buildNotifier(statusPromises);
         console.log('Jobs update completed');
     } catch (error) {
         console.error('Error updating jobs:', error);
+    }
+}
+
+// Builds watched one by one, until each of them finishes.
+async function updateWatchedBuilds() {
+    try {
+        const statusPromises = await BuildWatches.updateAllStatus();
+        if (!statusPromises.length) {
+            return;
+        }
+        await Promise.all(statusPromises);
+        buildWatchNotifier(statusPromises);
+        console.log('Watched builds update completed');
+    } catch (error) {
+        console.error('Error updating watched builds:', error);
     }
 }
 
@@ -232,6 +247,7 @@ chrome.runtime.onInstalled.addListener(async () => {
         await checkNotificationPermission();
         await ensureUpdateAlarm();
         await updateJobs();
+        await updateWatchedBuilds();
 
         // Inject content script into any existing Jenkins job tabs
         const tabs = await chrome.tabs.query({url: '*://*/*/job/*'});
@@ -250,6 +266,7 @@ chrome.runtime.onStartup.addListener(async () => {
         await checkNotificationPermission();
         await ensureUpdateAlarm();
         await updateJobs();
+        await updateWatchedBuilds();
     } catch (error) {
         console.error('Error during startup:', error);
     }
@@ -289,6 +306,7 @@ if (chrome.windows && chrome.windows.onRemoved) {
 chrome.alarms.onAlarm.addListener(async (alarm) => {
     if (alarm.name === UPDATE_ALARM) {
         await updateJobs();
+        await updateWatchedBuilds();
     }
 });
 
@@ -337,6 +355,53 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         return true;
     }
     
+    // Watch one specific build until it finishes.
+    if (message.action === 'addBuildWatch') {
+        (async () => {
+            try {
+                const parts = Services.buildUrlParts(message.url);
+                if (!parts) {
+                    throw new Error('This page is not a Jenkins build');
+                }
+
+                console.log('Watching build:', parts.url);
+                const build = await jenkinsBuild(parts.url);
+                await BuildWatches.add(parts.url, build);
+
+                await chrome.tabs.sendMessage(sender.tab.id, {
+                    type: 'buildWatchAdded',
+                    number: parts.number,
+                    building: build.building
+                });
+
+                // A build that is still running gets a confirmation; a finished
+                // one is reported by the watcher itself a moment later.
+                if (build.building) {
+                    await Services.Notification.create('jenkins-watch-' + parts.url, {
+                        type: 'basic',
+                        iconUrl: chrome.runtime.getURL('img/icon48.png'),
+                        title: 'Watching build #' + parts.number,
+                        message: 'You will be notified when this build finishes.'
+                    });
+                }
+
+                await updateWatchedBuilds();
+            } catch (error) {
+                console.error('Error watching build:', error);
+                try {
+                    await chrome.tabs.sendMessage(sender.tab.id, {
+                        type: 'buildPageAddError',
+                        error: 'Could not watch this build: ' + error.message
+                    });
+                } catch (sendError) {
+                    console.error('Error sending error message to content script:', sendError);
+                }
+            }
+        })();
+
+        return true;
+    }
+
     if (message.action === 'addBuildPage') {
         (async () => {
             try {

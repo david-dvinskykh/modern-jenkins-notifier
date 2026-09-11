@@ -40,88 +40,119 @@
         }
     });
 
-    // Function to check if current page is a valid Jenkins job
-    function validateJenkinsPage() {
-        const url = window.location.href;
-        
-        // Check if it's a job page
+    // What the current page offers: a job to monitor, or one build to follow
+    // until it finishes.
+    function describeJenkinsPage() {
+        const url = window.location.href.split('?')[0].split('#')[0];
+
         if (!url.includes('/job/')) {
             return {
-                isValid: false,
+                kind: 'invalid',
                 error: 'Not a Jenkins job page'
             };
         }
 
-        // Check if it's a build page (has build number)
-        const buildNumberMatch = url.match(/\/job\/.*\/(\d+)\/?$/);
-        if (buildNumberMatch) {
-            return {
-                isValid: false,
-                error: 'Please add the job page, not a specific build page'
-            };
-        }
-
-        // Check if it's a job configuration page
         if (url.includes('/configure')) {
             return {
-                isValid: false,
+                kind: 'invalid',
                 error: 'Please add the job page, not its configuration page'
             };
         }
 
+        const buildNumberMatch = url.match(/\/job\/.+?\/(\d+)\/?$/);
+        if (buildNumberMatch) {
+            return {
+                kind: 'build',
+                number: buildNumberMatch[1],
+                action: 'addBuildWatch',
+                label: 'Watch build #' + buildNumberMatch[1],
+                title: 'Notify me when this build finishes, then stop watching'
+            };
+        }
+
         return {
-            isValid: true
+            kind: 'job',
+            action: 'addBuildPage',
+            label: 'Monitor this job',
+            title: 'Notify me about every build of this job'
         };
     }
 
-    // Function to create and show the indicator
+    // The button on the page. It stays in the corner and does what the current
+    // page allows: monitor the job, or follow this one build.
     function createIndicator() {
-        // Remove any existing indicators
         const existingIndicators = document.querySelectorAll('.jenkins-notifier-indicator');
         existingIndicators.forEach(indicator => indicator.remove());
 
-        const indicator = document.createElement('div');
-        indicator.className = 'jenkins-notifier-indicator';
-        indicator.style.cssText = `
+        const page = describeJenkinsPage();
+        if (page.kind === 'invalid') {
+            return;
+        }
+
+        const button = document.createElement('button');
+        button.className = 'jenkins-notifier-indicator';
+        button.type = 'button';
+        button.title = page.title + ' (' + formatShortcut(shortcutConfig) + ')';
+        button.style.cssText = `
             position: fixed;
             bottom: 20px;
             right: 20px;
-            background: rgba(0, 0, 0, 0.8);
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            background: ${page.kind === 'build' ? '#2a6bb5' : 'rgba(0, 0, 0, 0.82)'};
             color: white;
-            padding: 10px 15px;
-            border-radius: 5px;
+            border: 0;
+            padding: 10px 14px;
+            border-radius: 20px;
             font-size: 13px;
+            line-height: 1.2;
             z-index: 2147483647;
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-            box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+            box-shadow: 0 2px 8px rgba(0,0,0,0.3);
             cursor: pointer;
-            transition: opacity 0.5s;
+            transition: opacity 0.25s, transform 0.15s;
         `;
-        indicator.textContent = `Jenkins Notifier Active (${formatShortcut(shortcutConfig)})`;
-        
-        // Add click handler to test the extension
-        indicator.addEventListener('click', () => {
-            console.log('Indicator clicked - testing notification system');
-            showNotification('Notification system test');
+        button.textContent = page.label;
+
+        button.addEventListener('mouseenter', () => {
+            button.style.transform = 'translateY(-1px)';
+        });
+        button.addEventListener('mouseleave', () => {
+            button.style.transform = 'none';
+        });
+        button.addEventListener('click', (event) => {
+            event.preventDefault();
+            requestMonitoring();
         });
 
-        // Ensure body exists before appending
         if (document.body) {
-            document.body.appendChild(indicator);
-            console.log('Indicator added to page');
+            document.body.appendChild(button);
         } else {
-            // If body doesn't exist yet, wait for it
             document.addEventListener('DOMContentLoaded', () => {
-                document.body.appendChild(indicator);
-                console.log('Indicator added to page after DOMContentLoaded');
+                document.body.appendChild(button);
             });
         }
+    }
 
-        // Remove indicator after 10 seconds
-        setTimeout(() => {
-            indicator.style.opacity = '0';
-            setTimeout(() => indicator.remove(), 500);
-        }, 10000);
+    // Asks the background script to start monitoring what this page shows.
+    function requestMonitoring() {
+        const page = describeJenkinsPage();
+        if (page.kind === 'invalid') {
+            showNotification(page.error, true);
+            return;
+        }
+
+        chrome.runtime.sendMessage({
+            action: page.action,
+            url: window.location.href,
+            title: document.title
+        }, () => {
+            if (chrome.runtime.lastError) {
+                console.error('Error sending message:', chrome.runtime.lastError);
+                showNotification('Failed to communicate with extension', true);
+            }
+        });
     }
 
     // Function to show notifications
@@ -191,28 +222,8 @@
             console.log('Configured shortcut detected');
             event.preventDefault(); // Prevent any default browser behavior
             event.stopPropagation(); // Stop event bubbling
-            
-            // Validate the current page
-            const validation = validateJenkinsPage();
-            if (!validation.isValid) {
-                console.log('Page validation failed:', validation.error);
-                showNotification(validation.error, true);
-                return;
-            }
-            
-            console.log('Sending message to add build page:', window.location.href);
-            chrome.runtime.sendMessage({
-                action: 'addBuildPage',
-                url: window.location.href,
-                title: document.title
-            }, response => {
-                if (chrome.runtime.lastError) {
-                    console.error('Error sending message:', chrome.runtime.lastError);
-                    showNotification('Failed to communicate with extension', true);
-                } else {
-                    console.log('Message sent successfully, response:', response);
-                }
-            });
+
+            requestMonitoring();
         }
     }
 
@@ -230,6 +241,10 @@
             
             if (message.type === 'buildPageAdded') {
                 showNotification(`Jenkins build page added to monitoring! (${formatShortcut(shortcutConfig)} to add more)`);
+            } else if (message.type === 'buildWatchAdded') {
+                showNotification(message.building
+                    ? `Watching build #${message.number}. You will be notified when it finishes.`
+                    : `Build #${message.number} has already finished, its result follows.`);
             } else if (message.type === 'buildPageAddError') {
                 showNotification(message.error, true);
             }

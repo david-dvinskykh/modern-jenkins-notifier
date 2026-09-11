@@ -18,6 +18,11 @@
   </h1>
 </header>
 <main>
+  <div id="buildWatchSection" class="hidden">
+    <h2 class="h5">Watched builds</h2>
+    <div id="buildWatchList" class="list-group"></div>
+  </div>
+
   <div id="jobList" class="list-group"></div>
 
   <p class="help-block">No jobs. Please enter a url below to listen for job builds.</p>
@@ -57,6 +62,24 @@
       <ul data-id="jobs" class="list-unstyled">
         <!--View jobs-->
       </ul>
+    </div>
+  </template>
+
+  <template id="buildWatchItemTemplate">
+    <div class="list-group-item">
+      <div class="row">
+        <div class="col-xs-9">
+          <div class="job-title">
+            <a target="_blank" data-buildurl data-buildfield="name"><!--name--></a>
+          </div>
+          <span class="small" data-builderror></span>
+        </div>
+        <div class="col-xs-3 text-right">
+          <button type="button" class="close" aria-label="Stop watching"><span
+            aria-hidden="true">&times;</span></button>
+          <span data-buildfield="status" data-buildstatusclass class="badge"><!--status--></span>
+        </div>
+      </div>
     </div>
   </template>
 

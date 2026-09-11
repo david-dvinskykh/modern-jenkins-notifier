@@ -405,6 +405,117 @@ function jenkinsService(defaultJobData) {
   };
 }
 
+// Single build service
+//
+// A watched build is not a job: it is one run that is followed until it ends.
+const BUILD_RESULT_STATUS = {
+  SUCCESS: 'Success',
+  FAILURE: 'Failure',
+  UNSTABLE: 'Unstable',
+  ABORTED: 'Aborted',
+  NOT_BUILT: 'Not built'
+};
+
+const BUILD_STATUS_CLASS = {
+  Success: 'success',
+  Failure: 'danger',
+  Unstable: 'warning',
+  Building: 'info'
+};
+
+export function buildUrlParts(url) {
+  var match = /^(.*\/job\/.+?)\/(\d+)\/?$/.exec(url.split('?')[0].split('#')[0]);
+  if (!match) {
+    return null;
+  }
+  return {
+    jobUrl: match[1] + '/',
+    number: Number(match[2]),
+    url: match[1] + '/' + match[2] + '/'
+  };
+}
+
+function buildMapping(url, data) {
+  var status = data.building
+    ? 'Building'
+    : (BUILD_RESULT_STATUS[data.result] || data.result || 'Unknown');
+
+  return {
+    url: decodeURI(url),
+    name: data.fullDisplayName || data.displayName || decodeURI(url),
+    number: data.number || '',
+    building: !!data.building,
+    status: status,
+    statusClass: BUILD_STATUS_CLASS[status] || '',
+    lastBuildTime: data.timestamp ? new Date(data.timestamp).toISOString() : '',
+    error: undefined
+  };
+}
+
+function jenkinsBuildService() {
+  var fetchOptions = {credentials: 'include'};
+
+  return function (url) {
+    var buildUrl = url.charAt(url.length - 1) === '/' ? url : url + '/';
+    return fetch(buildUrl + 'api/json/', fetchOptions).then(function (res) {
+      return res.ok ? res.json() : Promise.reject(res);
+    }).then(function (data) {
+      return buildMapping(buildUrl, data);
+    });
+  };
+}
+
+function buildWatchesService($q, Storage, jenkinsBuild) {
+  var BuildWatches = {
+    builds: {},
+    add: function (url, data) {
+      var parts = buildUrlParts(url);
+      if (!parts) {
+        return Promise.reject(new Error('This is not a Jenkins build url'));
+      }
+
+      var result = {};
+      result.url = parts.url;
+      result.oldValue = BuildWatches.builds[parts.url];
+      result.newValue = BuildWatches.builds[parts.url] = data || result.oldValue || {
+        url: parts.url,
+        name: parts.url,
+        number: parts.number,
+        building: true,
+        status: 'Building',
+        statusClass: BUILD_STATUS_CLASS.Building,
+        error: undefined
+      };
+
+      return Storage.set({builds: BuildWatches.builds}).then(function () {
+        return result;
+      });
+    },
+    remove: function (url) {
+      delete BuildWatches.builds[url];
+      return Storage.set({builds: BuildWatches.builds});
+    },
+    updateStatus: function (url) {
+      return jenkinsBuild(url).catch(function (res) {
+        var data = _.clone(BuildWatches.builds[url]);
+        data.error = (res instanceof Error ? res.message : res.statusText) || 'Unreachable';
+        return data;
+      }).then(function (data) {
+        return BuildWatches.add(url, data);
+      });
+    },
+    updateAllStatus: function () {
+      var promises = [];
+      _.forEach(BuildWatches.builds, function (_ignored, url) {
+        promises.push(BuildWatches.updateStatus(url));
+      });
+      return $q.when(promises);
+    }
+  };
+
+  return BuildWatches;
+}
+
 // Jobs Service
 function JobsService($q, Storage, jenkins, defaultJobData) {
   var Jobs = {
@@ -529,6 +640,66 @@ function buildWatcherService($rootScope, Jobs, buildNotifier) {
       if ($rootScope.options.notification === 'none') {
         restart($rootScope.options);
       }
+    });
+  };
+}
+
+// Build Watch Notifier Service
+//
+// A watched build reports once, when it stops running, and then drops itself
+// from the watch list.
+function buildWatchNotifierService($rootScope, Notification, BuildWatches) {
+  async function notifyFinishedBuild(build, url) {
+    const title = 'Build ' + build.status + '!';
+    const note = 'Watched build: it has finished, monitoring stops now.';
+
+    try {
+      await Notification.create('jenkins-' + build.url, {
+        type: 'basic',
+        title: title + ' - ' + build.name,
+        message: build.url,
+        contextMessage: note,
+        iconUrl: chrome.runtime.getURL('img/icon48.png'),
+        soundKind: soundKindForStatus(build.status)
+      });
+
+      if (typeof window === 'undefined' && $rootScope.options.popupWindow !== false) {
+        await showBuildToast({
+          title: title,
+          job: build.name,
+          message: build.url,
+          status: build.status,
+          url: build.url,
+          note: note
+        });
+      }
+
+      await BuildWatches.remove(url);
+    } catch (error) {
+      console.error('Failed to notify about a watched build:', error, error.stack);
+    }
+  }
+
+  return function (promises) {
+    if (!Array.isArray(promises)) {
+      promises = [promises];
+    }
+
+    promises.forEach(function (promise) {
+      if (!promise || typeof promise.then !== 'function') {
+        return;
+      }
+
+      promise.then(function (data) {
+        var build = data.newValue;
+        // Keep waiting while the build runs or while the server is unreachable.
+        if (!build || build.error || build.building || build.status === 'Building') {
+          return;
+        }
+        return notifyFinishedBuild(build, data.url);
+      }).catch(function (error) {
+        console.error('Error processing a watched build:', error);
+      });
     });
   };
 }
@@ -686,15 +857,35 @@ function initJobs(Jobs, Storage, $rootScope) {
 // Create service instances
 export const defaultJobData = defaultJobDataService();
 export const jenkins = jenkinsService(defaultJobData);
+export const jenkinsBuild = jenkinsBuildService();
 export const Jobs = JobsService($q, Storage, jenkins, defaultJobData);
+export const BuildWatches = buildWatchesService($q, Storage, jenkinsBuild);
+export const buildWatchNotifier = buildWatchNotifierService($rootScope, Notification, BuildWatches);
 export const buildNotifier = buildNotifierService($rootScope, Notification, Jobs);
 export const buildWatcher = buildWatcherService($rootScope, Jobs, buildNotifier);
 
 // Export initialization function
+function initBuildWatches(BuildWatches, Storage, $rootScope) {
+  BuildWatches.builds = {};
+
+  Storage.onChanged.addListener(function (objects) {
+    if (objects.builds) {
+      BuildWatches.builds = objects.builds.newValue || {};
+      $rootScope.$broadcast('Builds::builds.changed', BuildWatches.builds);
+    }
+  });
+
+  return Storage.get({builds: BuildWatches.builds}).then(function (objects) {
+    BuildWatches.builds = objects.builds || {};
+    $rootScope.$broadcast('Builds::builds.changed', BuildWatches.builds);
+  });
+}
+
 export function init() {
   return Promise.all([
     initOptions($rootScope, Storage),
-    initJobs(Jobs, Storage, $rootScope)
+    initJobs(Jobs, Storage, $rootScope),
+    initBuildWatches(BuildWatches, Storage, $rootScope)
   ]).then(() => {
     buildWatcher();
   }).catch(error => {

@@ -16,7 +16,7 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-import { init, _, Jobs, $rootScope, buildNotifier } from './services.js';
+import { init, _, Jobs, BuildWatches, $rootScope, buildNotifier, buildWatchNotifier } from './services.js';
 
 function keepServiceWorkerAlive() {
   chrome.runtime.sendMessage({ type: 'keepAlive' });
@@ -38,6 +38,9 @@ export async function documentReady() {
     const jobSubItemTemplate = document.getElementById('jobSubItemTemplate');
     const noJobsMessage = document.querySelector('.help-block');
     const temporaryWatchInput = document.getElementById('temporaryWatch');
+    const buildWatchSection = document.getElementById('buildWatchSection');
+    const buildWatchList = document.getElementById('buildWatchList');
+    const buildWatchItemTemplate = document.getElementById('buildWatchItemTemplate');
 
     optionsLink.addEventListener('click', openOptionsPage);
     urlForm.addEventListener('submit', addUrl);
@@ -48,6 +51,7 @@ export async function documentReady() {
 
     // Initial render
     renderJobs(Jobs.jobs);
+    renderBuildWatches(BuildWatches.builds);
 
     $rootScope.$on('Jobs::jobs.initialized', function (_, jobs) {
       renderJobs(jobs);
@@ -57,6 +61,13 @@ export async function documentReady() {
     $rootScope.$on('Jobs::jobs.changed', function (_, jobs) {
       renderJobs(jobs);
     });
+
+    $rootScope.$on('Builds::builds.changed', function (_, builds) {
+      renderBuildWatches(builds);
+    });
+
+    // Builds are followed one by one, so refresh them while the popup is open.
+    BuildWatches.updateAllStatus().then(buildWatchNotifier);
 
     function openOptionsPage() {
       if (chrome.runtime.openOptionsPage) {
@@ -155,6 +166,55 @@ export async function documentReady() {
         .catch(error => {
           console.error('Error updating one-time watch:', error);
         });
+    }
+
+    // Builds followed until they finish, listed above the monitored jobs.
+    function renderBuildWatches(builds) {
+      if (!buildWatchSection || !buildWatchList || !buildWatchItemTemplate) {
+        return;
+      }
+
+      const urls = Object.keys(builds || {});
+      buildWatchSection.classList.toggle('hidden', urls.length === 0);
+
+      while (buildWatchList.firstChild) {
+        buildWatchList.firstChild.remove();
+      }
+
+      if (!urls.length) {
+        return;
+      }
+
+      renderRepeat(buildWatchList, buildWatchItemTemplate, builds, renderBuildWatch);
+    }
+
+    function renderBuildWatch(node, url, build) {
+      if (!build) return;
+
+      _.forEach(node.querySelectorAll('[data-buildfield]'), function (el) {
+        el.innerText = build[el.dataset.buildfield] || '';
+      });
+
+      _.forEach(node.querySelectorAll('[data-buildurl]'), function (el) {
+        el.href = build.url || '#';
+      });
+
+      _.forEach(node.querySelectorAll('[data-buildstatusclass]'), function (el) {
+        el.className = el.className.replace(/ alert-.*$/, '').replace(/ ?$/, ' alert-' + (build.statusClass || ''));
+      });
+
+      _.forEach(node.querySelectorAll('[data-builderror]'), function (el) {
+        el.innerText = build.error ? 'Error: ' + build.error : '';
+      });
+
+      const closeButton = node.querySelector('button.close');
+      closeButton.dataset.url = url;
+      if (!closeButton.dataset.bound) {
+        closeButton.dataset.bound = 'true';
+        closeButton.addEventListener('click', function (event) {
+          BuildWatches.remove(event.currentTarget.dataset.url);
+        });
+      }
     }
 
     function renderJobs(jobs) {
