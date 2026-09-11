@@ -12,6 +12,7 @@ Features:
 ✔ Number of failing, unstable or stable jobs in icon badge  
 ✔ Choose to be notified on every build or on every unstable build  
 ✔ One-time watch: get notified about the next build of a single job, then stop  
+✔ Follow one specific build from its own page, with a button or a shortcut  
 ✔ Sound and an on-screen pop-up window with the build result  
 ✔ Modern Manifest V3 support for enhanced security
 
@@ -40,6 +41,19 @@ attempt failed, and the **Send a test notification** button checks the whole pat
 end to end. Notifications also need access to the Jenkins server itself: without
 it no build status can be read, so no change can be reported. The **Access to
 Jenkins servers** section grants that access for the configured urls.
+
+# Watching one build
+
+A single build can be followed without adding its job to the monitoring list.
+Open the build page on your Jenkins server and either press the shortcut
+(default: Shift + J) or click the button the extension places in the bottom
+right corner of the page. The button says what it will do on the page you are
+on: *Watch build #N* on a build page, *Monitor this job* on a job page.
+
+A watched build is polled with the same refresh time as the jobs, reports its
+result once it stops running and is then dropped. Builds being watched are
+listed at the top of the extension popup, where they can also be dropped by
+hand.
 
 # One-time watch
 
