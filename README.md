@@ -10,8 +10,29 @@ Features:
 ✔ Folder and Pipeline support  
 ✔ Multiple Jenkins servers support  
 ✔ Number of failing, unstable or stable jobs in icon badge  
-✔ Choose to be notified on every build or on every unstable build
+✔ Choose to be notified on every build or on every unstable build  
+✔ One-time watch: get notified about the next build of a single job, then stop  
 ✔ Modern Manifest V3 support for enhanced security
+
+# Notifications
+
+Build results are delivered as desktop notifications through the browser, which
+hands them to the notification centre of the operating system.
+
+If nothing shows up, open the options page. The **System notifications** section
+reports whether the browser is allowed to show notifications and why the last
+attempt failed, and the **Send a test notification** button checks the whole path
+end to end. Notifications also need access to the Jenkins server itself: without
+it no build status can be read, so no change can be reported. The **Access to
+Jenkins servers** section grants that access for the configured urls.
+
+# One-time watch
+
+To follow a single job without keeping it in the monitoring list, tick
+*Notify me once about the next build* when adding its url, or press **Notify
+once** on a job already in the list. The next build result of that job is
+reported even when notifications are globally turned off, and the job is then
+removed from the list automatically.
 
 # Installation
 [![Add to Chrome](https://developer.chrome.com/webstore/images/ChromeWebStore_Badge_v2_340x96.png)](https://chrome.google.com/webstore/detail/yet-another-jenkins-notif/cimdjdaglanfkpfpoemjkfkmjgkmahpg)

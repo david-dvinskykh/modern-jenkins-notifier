@@ -37,6 +37,7 @@ export async function documentReady() {
     const jobItemTemplate = document.getElementById('jobItemTemplate');
     const jobSubItemTemplate = document.getElementById('jobSubItemTemplate');
     const noJobsMessage = document.querySelector('.help-block');
+    const temporaryWatchInput = document.getElementById('temporaryWatch');
 
     optionsLink.addEventListener('click', openOptionsPage);
     urlForm.addEventListener('submit', addUrl);
@@ -71,9 +72,14 @@ export async function documentReady() {
       const url = urlInput.value;
       if (!url) return;
 
-      Jobs.add(url)
+      const temporary = !!(temporaryWatchInput && temporaryWatchInput.checked);
+
+      Jobs.add(url, null, { temporary: temporary })
         .then(() => {
           urlInput.value = '';
+          if (temporaryWatchInput) {
+            temporaryWatchInput.checked = false;
+          }
           validateForm();
           return Jobs.updateStatus(url);
         })
@@ -112,6 +118,45 @@ export async function documentReady() {
       Jobs.remove(url);
     }
 
+    // A one-time watch reports the next build of this single job and then stops
+    // monitoring it, whatever the global notification setting is.
+    function renderTemporaryToggle(node, url, job) {
+      const toggle = node.querySelector('[data-id="temporaryToggle"]');
+      if (!toggle) return;
+
+      const temporary = !!(job && job.temporary);
+      const label = toggle.querySelector('[data-id="temporaryLabel"]');
+
+      toggle.dataset.url = url;
+      toggle.setAttribute('aria-pressed', String(temporary));
+      toggle.classList.toggle('btn-warning', temporary);
+      toggle.classList.toggle('btn-default', !temporary);
+      toggle.title = temporary
+        ? 'One-time watch on: monitoring stops after the next build'
+        : 'Notify me once about the next build, then stop watching';
+      if (label) {
+        label.innerText = temporary ? 'Notify once: on' : 'Notify once';
+      }
+
+      if (!toggle.dataset.bound) {
+        toggle.dataset.bound = 'true';
+        toggle.addEventListener('click', temporaryToggleClick);
+      }
+    }
+
+    function temporaryToggleClick(event) {
+      const toggle = event.currentTarget;
+      const url = toggle.dataset.url;
+      const job = Jobs.jobs[url];
+      if (!job) return;
+
+      Jobs.setTemporary(url, !job.temporary)
+        .then(() => renderJobs(Jobs.jobs))
+        .catch(error => {
+          console.error('Error updating one-time watch:', error);
+        });
+    }
+
     function renderJobs(jobs) {
       // Clear existing job list
       while (jobList.firstChild) {
@@ -138,6 +183,8 @@ export async function documentReady() {
       const closeButton = node.querySelector('button.close');
       closeButton.dataset.url = url;
       closeButton.addEventListener('click', removeUrlClick);
+
+      renderTemporaryToggle(node, url, job);
 
       const subJobs = node.querySelector('[data-id="jobs"]');
       subJobs.classList.toggle('hidden', !job.jobs);

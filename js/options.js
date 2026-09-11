@@ -16,7 +16,7 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-import { init, Jobs, $rootScope } from './services.js';
+import { init, Jobs, Notification, $rootScope } from './services.js';
 
 init();
 
@@ -25,6 +25,7 @@ const urlPattern = /^https?:\/\/.+/;
 
 $rootScope.$on('Jobs::jobs.initialized', function (event, jobs) {
   showJobUrls(jobs);
+  refreshHostAccessStatus();
 });
 
 NodeList.prototype.forEach = Array.prototype.forEach;
@@ -36,6 +37,12 @@ const urlsStatusElement = document.getElementById('urlsStatus');
 const shortcutInput = document.getElementById('addJobShortcut');
 const resetShortcutButton = document.getElementById('resetShortcut');
 const shortcutStatusElement = document.getElementById('shortcutStatus');
+const notificationStatusElement = document.getElementById('notificationStatus');
+const notificationHintElement = document.getElementById('notificationHint');
+const notificationTestButton = document.getElementById('testNotification');
+const notificationTestResultElement = document.getElementById('notificationTestResult');
+const hostAccessStatusElement = document.getElementById('hostAccessStatus');
+const grantHostAccessButton = document.getElementById('grantHostAccess');
 
 const defaultOptions = {
   refreshTime: 60,
@@ -123,6 +130,131 @@ function resetShortcut() {
   saveShortcut(defaultShortcut);
 }
 
+
+// --- System notifications ------------------------------------------------
+//
+// A notification is only useful when the operating system shows it, and that
+// depends on settings outside of this extension. Report what is known and give
+// the user a way to check the whole path end to end.
+
+function setStatus(element, text, ok) {
+  element.textContent = text;
+  element.classList.toggle('status-ok', ok === true);
+  element.classList.toggle('status-error', ok === false);
+}
+
+function describeLastError(health) {
+  if (!health || !health.lastError) {
+    return '';
+  }
+  const when = health.lastErrorAt ? new Date(health.lastErrorAt).toLocaleString() : '';
+  return ' Last failure: ' + health.lastError + (when ? ' (' + when + ')' : '') + '.';
+}
+
+function refreshNotificationStatus() {
+  Notification.getPermissionLevel().then(function (level) {
+    chrome.storage.local.get({notificationHealth: {}}, function (objects) {
+      const health = objects.notificationHealth || {};
+
+      if (level === 'granted') {
+        setStatus(
+          notificationStatusElement,
+          'The browser is allowed to show notifications.' + describeLastError(health),
+          !health.lastError
+        );
+        notificationHintElement.classList.toggle('hidden', !health.lastError);
+        notificationHintElement.textContent = health.lastError
+          ? 'Notifications were refused by the browser. Send a test notification to check the current state.'
+          : '';
+      } else {
+        setStatus(notificationStatusElement, 'Notifications are turned off for this browser.', false);
+        notificationHintElement.classList.remove('hidden');
+        notificationHintElement.textContent =
+          'Allow notifications for your browser in the notification settings of the ' +
+          'operating system, then send a test notification.';
+      }
+    });
+  });
+}
+
+function sendTestNotification() {
+  notificationTestResultElement.textContent = 'Sending...';
+  notificationTestResultElement.classList.remove('status-ok', 'status-error');
+
+  Notification.create('jenkins-test-' + Date.now(), {
+    type: 'basic',
+    title: 'Modern Jenkins Notifier',
+    message: 'Test notification. If you can see this, build results will be shown the same way.',
+    iconUrl: chrome.runtime.getURL('img/icon48.png')
+  }).then(function () {
+    setStatus(notificationTestResultElement, 'Sent. Check your notification centre.', true);
+    refreshNotificationStatus();
+  }).catch(function (error) {
+    setStatus(notificationTestResultElement, 'Failed: ' + error.message, false);
+    refreshNotificationStatus();
+  });
+}
+
+// --- Access to Jenkins servers -------------------------------------------
+//
+// Without access to the server origin the status requests fail, no build change
+// is ever detected and no notification is ever produced.
+
+function jobOrigins() {
+  const origins = new Set();
+  Object.keys(Jobs.jobs || {}).forEach(function (url) {
+    try {
+      origins.add(new URL(url).origin + '/*');
+    } catch (error) {
+      console.warn('Ignoring invalid job url:', url);
+    }
+  });
+  return Array.from(origins);
+}
+
+function refreshHostAccessStatus() {
+  const origins = jobOrigins();
+
+  if (!origins.length) {
+    setStatus(hostAccessStatusElement, 'No Jenkins server configured yet.');
+    grantHostAccessButton.disabled = true;
+    return;
+  }
+
+  chrome.permissions.contains({origins: origins}, function (granted) {
+    if (chrome.runtime.lastError) {
+      setStatus(hostAccessStatusElement, 'Could not read the granted permissions.', false);
+      return;
+    }
+    grantHostAccessButton.disabled = granted;
+    setStatus(
+      hostAccessStatusElement,
+      granted
+        ? 'Access granted for: ' + origins.join(', ')
+        : 'Access is missing for: ' + origins.join(', '),
+      granted
+    );
+  });
+}
+
+function grantHostAccess() {
+  const origins = jobOrigins();
+  if (!origins.length) {
+    return;
+  }
+
+  chrome.permissions.request({origins: origins}, function (granted) {
+    if (chrome.runtime.lastError) {
+      setStatus(hostAccessStatusElement, 'Request failed: ' + chrome.runtime.lastError.message, false);
+      return;
+    }
+    refreshHostAccessStatus();
+    if (granted) {
+      Jobs.updateAllStatus();
+    }
+  });
+}
+
 // Saves options to chrome.storage.local.
 function saveOptions() {
   const options = {
@@ -156,6 +288,9 @@ function saveUrls() {
     .then(showJobUrls)
     .then(() => {
       showSavedNotification(urlsStatusElement);
+      // The click is a user gesture, so the origins of the freshly saved urls
+      // can be requested right away.
+      grantHostAccess();
     })
     .catch(error => {
       console.error('Error saving URLs:', error);
@@ -206,7 +341,12 @@ resetShortcutButton.addEventListener('click', resetShortcut);
 
 document.addEventListener('DOMContentLoaded', () => {
   restoreOptions();
+  refreshNotificationStatus();
+  refreshHostAccessStatus();
 });
+
+notificationTestButton.addEventListener('click', sendTestNotification);
+grantHostAccessButton.addEventListener('click', grantHostAccess);
 
 document.querySelectorAll('input[type=radio], #refreshTime').forEach(function (element) {
   element.addEventListener('change', saveOptions);

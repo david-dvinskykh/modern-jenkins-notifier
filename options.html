@@ -42,6 +42,23 @@
       font-size: 0.9em;
       margin-top: 5px;
     }
+
+    .hint {
+      color: #666;
+      font-size: 0.9em;
+    }
+
+    .hidden {
+      display: none;
+    }
+
+    .status-ok {
+      color: #3c763d;
+    }
+
+    .status-error {
+      color: #d9534f;
+    }
   </style>
 </head>
 
@@ -73,6 +90,24 @@
   </p>
 </fieldset>
 <p style="visibility: hidden" id="optionStatus">Options saved.</p>
+
+<fieldset>
+  <legend>System notifications</legend>
+  <p id="notificationStatus">Checking notification status...</p>
+  <p id="notificationHint" class="hint hidden"></p>
+  <button id="testNotification" type="button">Send a test notification</button>
+  <span id="notificationTestResult" class="hint"></span>
+</fieldset>
+
+<fieldset>
+  <legend>Access to Jenkins servers</legend>
+  <p id="hostAccessStatus">Checking server access...</p>
+  <p class="hint">
+    Build results can only be read, and therefore notified, from servers this
+    extension is allowed to reach.
+  </p>
+  <button id="grantHostAccess" type="button">Grant access to the listed servers</button>
+</fieldset>
 
 <fieldset>
   <legend>Keyboard Shortcuts</legend>
