@@ -57,16 +57,83 @@ Services.init().catch(error => {
 
 const { $rootScope, Jobs, $q, buildWatcher, buildNotifier, jenkins } = Services;
 
-async function requestNotificationPermission() {
-    const hasPermission = await chrome.permissions.contains({
-        permissions: ['notifications']
+const UPDATE_ALARM = 'update-jobs';
+const DEFAULT_REFRESH_TIME = 60;
+
+// "notifications" is a required permission, so it is always granted to the
+// extension. What can still be missing is the permission the operating system
+// or the browser profile grants to the browser itself, which is what decides
+// whether a notification is actually shown. Report it instead of requesting a
+// permission that cannot be requested from here.
+async function checkNotificationPermission() {
+    const level = await Services.Notification.getPermissionLevel();
+    await storageSet({
+        notificationHealth: {
+            permissionLevel: level,
+            checkedAt: Date.now()
+        }
     });
-    
-    if (!hasPermission) {
-        await chrome.permissions.request({
-            permissions: ['notifications']
-        });
+
+    if (level !== 'granted') {
+        console.warn('Notifications are disabled for the browser: ' + level);
     }
+
+    return level;
+}
+
+// Callback style works on every browser and Manifest V3 version; the promise
+// flavour of these APIs does not.
+function storageSet(objects) {
+    return new Promise((resolve) => {
+        chrome.storage.local.set(objects, () => {
+            void chrome.runtime.lastError;
+            resolve();
+        });
+    });
+}
+
+function getAlarm(name) {
+    return new Promise((resolve) => {
+        try {
+            chrome.alarms.get(name, (alarm) => {
+                void chrome.runtime.lastError;
+                resolve(alarm);
+            });
+        } catch (error) {
+            resolve(undefined);
+        }
+    });
+}
+
+function readRefreshTime() {
+    return new Promise((resolve) => {
+        chrome.storage.local.get({options: {refreshTime: DEFAULT_REFRESH_TIME}}, (objects) => {
+            const refreshTime = Number(objects.options && objects.options.refreshTime);
+            resolve(refreshTime > 0 ? refreshTime : DEFAULT_REFRESH_TIME);
+        });
+    });
+}
+
+// The alarm is the only reliable scheduler for a Manifest V3 service worker.
+// Recreating it on every service worker start would push the next run one full
+// period into the future each time the worker wakes up for something else, so
+// it is only (re)created when it is missing or when the period has changed.
+async function ensureUpdateAlarm() {
+    const refreshTime = await readRefreshTime();
+    // Chrome refuses periods shorter than one minute.
+    const periodInMinutes = Math.max(1, refreshTime / 60);
+    const existing = await getAlarm(UPDATE_ALARM);
+
+    if (existing && existing.periodInMinutes === periodInMinutes) {
+        return existing;
+    }
+
+    chrome.alarms.create(UPDATE_ALARM, {
+        periodInMinutes: periodInMinutes,
+        delayInMinutes: periodInMinutes
+    });
+    console.log('Update alarm scheduled every', periodInMinutes, 'minute(s)');
+    return getAlarm(UPDATE_ALARM);
 }
 
 $rootScope.$on('Jobs::jobs.initialized', () => {
@@ -160,35 +227,70 @@ async function updateJobs() {
 // Initial setup
 chrome.runtime.onInstalled.addListener(async () => {
     console.log('Extension installed/updated');
-    await requestNotificationPermission();
-    await updateJobs();
-    
-    // Inject content script into any existing Jenkins job tabs
-    const tabs = await chrome.tabs.query({url: '*://*/*/job/*'});
-    for (const tab of tabs) {
-        console.log('Injecting content script into existing tab:', tab.id);
-        injectContentScript(tab.id);
+    try {
+        await checkNotificationPermission();
+        await ensureUpdateAlarm();
+        await updateJobs();
+
+        // Inject content script into any existing Jenkins job tabs
+        const tabs = await chrome.tabs.query({url: '*://*/*/job/*'});
+        for (const tab of tabs) {
+            console.log('Injecting content script into existing tab:', tab.id);
+            injectContentScript(tab.id);
+        }
+    } catch (error) {
+        console.error('Error during installation setup:', error);
     }
 });
 
-// Set up alarm for periodic updates
-chrome.alarms.create('update-jobs', {
-    periodInMinutes: 1
+chrome.runtime.onStartup.addListener(async () => {
+    console.log('Browser started');
+    try {
+        await checkNotificationPermission();
+        await ensureUpdateAlarm();
+        await updateJobs();
+    } catch (error) {
+        console.error('Error during startup:', error);
+    }
+});
+
+// Make sure the alarm exists whenever the service worker is revived, without
+// postponing a run that is already scheduled.
+ensureUpdateAlarm().catch(error => {
+    console.error('Error scheduling the update alarm:', error);
+});
+
+// Follow the refresh time configured in the options page.
+chrome.storage.onChanged.addListener((changes, areaName) => {
+    if (areaName !== 'local' || !changes.options) {
+        return;
+    }
+    const oldRefresh = changes.options.oldValue && changes.options.oldValue.refreshTime;
+    const newRefresh = changes.options.newValue && changes.options.newValue.refreshTime;
+    if (oldRefresh !== newRefresh) {
+        ensureUpdateAlarm().catch(error => {
+            console.error('Error rescheduling the update alarm:', error);
+        });
+    }
 });
 
 // Listen for alarm
 chrome.alarms.onAlarm.addListener(async (alarm) => {
-    if (alarm.name === 'update-jobs') {
+    if (alarm.name === UPDATE_ALARM) {
         await updateJobs();
     }
 });
 
 // Handle notification clicks
 chrome.notifications.onClicked.addListener((notificationId) => {
-    if (notificationId.startsWith('jenkins-')) {
-        const url = notificationId.substring(8);
+    if (!notificationId.startsWith('jenkins-')) {
+        return;
+    }
+    const url = notificationId.substring('jenkins-'.length);
+    if (/^https?:\/\//.test(url)) {
         chrome.tabs.create({ url });
     }
+    chrome.notifications.clear(notificationId);
 });
 
 // Function to get the base URL for the last job in the path
@@ -252,8 +354,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                 }
 
                 // If status check passed, add the job
-                console.log('Adding job to monitoring...');
-                await Jobs.add(normalizedUrl);
+                const temporary = !!message.temporary;
+                console.log('Adding job to monitoring, temporary:', temporary);
+                await Jobs.add(normalizedUrl, null, { temporary: temporary });
                 console.log('Job added successfully');
                 
                 // Update the job status immediately
@@ -267,14 +370,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                     type: 'buildPageAdded'
                 });
                 
-                // Create a notification
+                // Confirm through the same notification path as build results,
+                // so a broken notification setup is visible right away.
                 const notificationId = 'jenkins-add-' + Date.now();
-                await chrome.notifications.create(notificationId, {
+                await Services.Notification.create(notificationId, {
                     type: 'basic',
                     iconUrl: chrome.runtime.getURL('img/icon48.png'),
                     title: 'Jenkins Build Added',
-                    message: 'The build page has been added to monitoring.',
-                    priority: 0
+                    message: temporary
+                        ? 'You will be notified once about the next build of this job.'
+                        : 'The build page has been added to monitoring.'
                 });
                 
                 console.log('Job addition process completed successfully');

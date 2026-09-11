@@ -32,11 +32,34 @@ export const chrome = {
     }
   },
   notifications: {
-    create: jest.fn(),
+    create: jest.fn((id, options, callback) => {
+      if (callback) callback(id);
+    }),
+    clear: jest.fn((id, callback) => {
+      if (callback) callback(true);
+    }),
+    getPermissionLevel: jest.fn((callback) => {
+      callback('granted');
+    }),
     onClicked: {
       addListener: jest.fn()
     },
     onClosed: {
+      addListener: jest.fn()
+    }
+  },
+  permissions: {
+    contains: jest.fn((permissions, callback) => {
+      if (callback) callback(true);
+    }),
+    request: jest.fn((permissions, callback) => {
+      if (callback) callback(true);
+    })
+  },
+  alarms: {
+    create: jest.fn(),
+    get: jest.fn(() => Promise.resolve(undefined)),
+    onAlarm: {
       addListener: jest.fn()
     }
   },

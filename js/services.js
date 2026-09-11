@@ -111,26 +111,148 @@ function StorageService($q) {
 }
 
 // Notification Service
+//
+// Notifications must reach the operating system notification centre, so every
+// failure mode of chrome.notifications is handled explicitly here:
+//
+//  - Chrome and Firefox accept different option sets. Firefox rejects the whole
+//    call when it sees an option it does not know (requireInteraction, silent,
+//    priority), which used to silently disable every notification there. The
+//    rich option set is tried once and the browser is downgraded to the plain
+//    one as soon as it is refused.
+//  - When chrome.notifications is unusable, the service worker registration is
+//    used as a last resort: showNotification goes through the same OS channel.
+//  - The outcome of the last attempt is persisted so the options page can tell
+//    the user whether notifications actually reach the system.
+const NOTIFICATION_HEALTH_KEY = 'notificationHealth';
+
 function NotificationService($q) {
-  return {
-    create: function (notificationId, options) {
-      return new Promise((resolve, reject) => {
-        try {
-          chrome.notifications.create(notificationId, {
-            ...options,
-            silent: false,
-            priority: 2
-          }, (id) => {
-            if (chrome.runtime.lastError) {
-              reject(chrome.runtime.lastError);
-            } else {
-              resolve(id);
-            }
-          });
-        } catch (error) {
-          reject(error);
+  var BASE_OPTION_KEYS = ['type', 'title', 'message', 'contextMessage', 'iconUrl'];
+  var RICH_OPTIONS = {requireInteraction: true, silent: false, priority: 2};
+  var richOptionsSupported = true;
+
+  function baseOptions(options) {
+    var result = {};
+    BASE_OPTION_KEYS.forEach(function (key) {
+      if (options[key] !== undefined) {
+        result[key] = options[key];
+      }
+    });
+    result.type = result.type || 'basic';
+    return result;
+  }
+
+  function saveHealth(patch) {
+    try {
+      chrome.storage.local.get({[NOTIFICATION_HEALTH_KEY]: {}}, function (objects) {
+        if (chrome.runtime.lastError) {
+          return;
         }
+        var health = Object.assign({}, objects[NOTIFICATION_HEALTH_KEY], patch);
+        chrome.storage.local.set({[NOTIFICATION_HEALTH_KEY]: health});
       });
+    } catch (error) {
+      console.error('Failed to record notification health:', error);
+    }
+  }
+
+  function clear(notificationId) {
+    return new Promise(function (resolve) {
+      try {
+        chrome.notifications.clear(notificationId, function () {
+          // lastError is meaningless here: an unknown id is not a failure.
+          void chrome.runtime.lastError;
+          resolve();
+        });
+      } catch (error) {
+        resolve();
+      }
+    });
+  }
+
+  function createOnce(notificationId, options) {
+    return new Promise(function (resolve, reject) {
+      try {
+        chrome.notifications.create(notificationId, options, function (id) {
+          if (chrome.runtime.lastError) {
+            reject(new Error(chrome.runtime.lastError.message));
+          } else if (!id) {
+            reject(new Error('Notification was not created'));
+          } else {
+            resolve(id);
+          }
+        });
+      } catch (error) {
+        // Firefox throws synchronously on an unknown option.
+        reject(error);
+      }
+    });
+  }
+
+  function createViaServiceWorker(options) {
+    if (typeof self === 'undefined' || !self.registration || !self.registration.showNotification) {
+      return Promise.reject(new Error('No service worker registration available'));
+    }
+    return self.registration.showNotification(options.title, {
+      body: options.message,
+      icon: options.iconUrl,
+      requireInteraction: true
+    }).then(function () {
+      return 'service-worker-notification';
+    });
+  }
+
+  function getPermissionLevel() {
+    return new Promise(function (resolve) {
+      if (!chrome.notifications || !chrome.notifications.getPermissionLevel) {
+        resolve('granted');
+        return;
+      }
+      try {
+        chrome.notifications.getPermissionLevel(function (level) {
+          void chrome.runtime.lastError;
+          resolve(level || 'granted');
+        });
+      } catch (error) {
+        resolve('granted');
+      }
+    });
+  }
+
+  return {
+    getPermissionLevel: getPermissionLevel,
+    create: async function (notificationId, options) {
+      var plain = baseOptions(options);
+      // Replacing a notification that is still on screen does not always
+      // re-alert the user, so drop the previous one with the same id first.
+      await clear(notificationId);
+
+      if (richOptionsSupported) {
+        try {
+          var id = await createOnce(notificationId, Object.assign({}, plain, RICH_OPTIONS));
+          saveHealth({lastSuccessAt: Date.now(), lastError: null});
+          return id;
+        } catch (error) {
+          richOptionsSupported = false;
+          console.warn('Rich notification options rejected, falling back:', error.message);
+        }
+      }
+
+      try {
+        var plainId = await createOnce(notificationId, plain);
+        saveHealth({lastSuccessAt: Date.now(), lastError: null});
+        return plainId;
+      } catch (error) {
+        console.warn('chrome.notifications failed, trying the service worker:', error.message);
+        try {
+          var swId = await createViaServiceWorker(plain);
+          saveHealth({lastSuccessAt: Date.now(), lastError: null});
+          return swId;
+        } catch (fallbackError) {
+          saveHealth({lastError: error.message, lastErrorAt: Date.now()});
+          throw error;
+        }
+      }
     }
   };
 }
@@ -152,6 +274,7 @@ function defaultJobDataService() {
       statusIcon: undefined,
       lastBuildNumber: undefined,
       error: undefined,
+      temporary: false,
       jobs: undefined
     };
   };
@@ -270,12 +393,34 @@ function jenkinsService(defaultJobData) {
 function JobsService($q, Storage, jenkins, defaultJobData) {
   var Jobs = {
     jobs: {},
-    add: function (url, data) {
+    add: function (url, data, jobOptions) {
       var result = {};
-      result.oldValue = Jobs.jobs[url];
-      result.newValue = Jobs.jobs[url] = data || Jobs.jobs[url] || defaultJobData(url);
+      var previous = Jobs.jobs[url];
+      result.oldValue = previous;
+
+      var value = data || previous || defaultJobData(url);
+      // A status refresh builds a brand new object from the Jenkins response,
+      // so the one-time watch flag has to be carried over explicitly.
+      if (jobOptions && jobOptions.temporary !== undefined) {
+        value.temporary = !!jobOptions.temporary;
+      } else if (value.temporary === undefined) {
+        value.temporary = !!(previous && previous.temporary);
+      }
+
+      result.newValue = Jobs.jobs[url] = value;
+      result.url = url;
       return Storage.set({jobs: Jobs.jobs}).then(function () {
         return result;
+      });
+    },
+    setTemporary: function (url, temporary) {
+      var job = Jobs.jobs[url];
+      if (!job) {
+        return $q.when(undefined);
+      }
+      job.temporary = !!temporary;
+      return Storage.set({jobs: Jobs.jobs}).then(function () {
+        return job;
       });
     },
     remove: function (url) {
@@ -319,8 +464,27 @@ function JobsService($q, Storage, jenkins, defaultJobData) {
 function buildWatcherService($rootScope, Jobs, buildNotifier) {
   let currentInterval = null;
 
+  // Timers do not survive the suspension of a Manifest V3 service worker, so
+  // there the polling is driven by chrome.alarms from the background script.
+  var isServiceWorker = typeof window === 'undefined';
+
+  function hasTemporaryWatch() {
+    var found = false;
+    _.forEach(Jobs.jobs, function (job) {
+      if (job && job.temporary) {
+        found = true;
+      }
+    });
+    return found;
+  }
+
   function runUpdateAndNotify(options) {
-    if (options.notification === 'none') {
+    if (isServiceWorker) {
+      return null;
+    }
+
+    // A one-time watch keeps polling even when global notifications are off.
+    if (options.notification === 'none' && !hasTemporaryWatch()) {
       return null;
     }
 
@@ -330,20 +494,33 @@ function buildWatcherService($rootScope, Jobs, buildNotifier) {
   }
 
   return function () {
+    function restart(options) {
+      if (currentInterval) {
+        clearInterval(currentInterval);
+        currentInterval = null;
+      }
+      currentInterval = runUpdateAndNotify(options);
+    }
+
     currentInterval = runUpdateAndNotify($rootScope.options);
 
     $rootScope.$on('Options::options.changed', function (_, options) {
-      if (currentInterval) {
-        clearInterval(currentInterval);
+      restart(options);
+    });
+
+    // Adding or dropping a one-time watch changes whether polling is needed.
+    $rootScope.$on('Jobs::jobs.changed', function () {
+      if ($rootScope.options.notification === 'none') {
+        restart($rootScope.options);
       }
-      currentInterval = runUpdateAndNotify(options);
     });
   };
 }
 
 // Build Notifier Service
-function buildNotifierService($rootScope, Notification) {
-  async function jobNotifier(newValue, oldValue) {
+function buildNotifierService($rootScope, Notification, Jobs) {
+  async function jobNotifier(newValue, oldValue, watch) {
+    watch = watch || {};
     oldValue = oldValue || {};
     if (oldValue.lastBuildNumber == newValue.lastBuildNumber) {
       return;
@@ -355,7 +532,10 @@ function buildNotifierService($rootScope, Notification) {
     }
 
     var title = 'Build ' + newValue.status + '!';
-    if ($rootScope.options.notification === 'unstable' && newValue.status === 'Success' && newValue.lastBuildNumber > 1) {
+    // A temporary watch reports the next result whatever it is: filtering it
+    // would defeat the point of watching a single job on purpose.
+    if (!watch.temporary && $rootScope.options.notification === 'unstable' &&
+        newValue.status === 'Success' && newValue.lastBuildNumber > 1) {
       if (oldValue.status === 'Success') {
         return;
       } else {
@@ -364,20 +544,27 @@ function buildNotifierService($rootScope, Notification) {
     }
 
     var buildUrl = newValue.url + newValue.lastBuildNumber;
-    
+
     try {
       const notificationId = 'jenkins-' + buildUrl;
       const iconPath = 'img/icon48.png';
-      
+
       const options = {
         type: 'basic',
         title: title + ' - ' + newValue.name,
         message: buildUrl,
-        iconUrl: chrome.runtime.getURL(iconPath),
-        requireInteraction: true
+        iconUrl: chrome.runtime.getURL(iconPath)
       };
-      
+
+      if (watch.temporary) {
+        options.contextMessage = 'One-time watch: monitoring of this job stops now.';
+      }
+
       await Notification.create(notificationId, options);
+
+      if (watch.temporary && watch.url && Jobs) {
+        await Jobs.remove(watch.url);
+      }
     } catch (error) {
       console.error('Failed to create notification:', error, error.stack);
     }
@@ -387,24 +574,29 @@ function buildNotifierService($rootScope, Notification) {
     if (!Array.isArray(promises)) {
       promises = [promises];
     }
-    
+
     promises.forEach(function (promise) {
       if (promise && typeof promise.then === 'function') {
         promise.then(function (data) {
-          // Disable notification for pending promises
-          if ($rootScope.options.notification === 'none') {
+          var oldValue = data.oldValue;
+          var newValue = data.newValue;
+          var watch = {
+            temporary: !!(newValue && newValue.temporary),
+            url: data.url || (newValue && newValue.url)
+          };
+
+          // Disable notification for pending promises, except for jobs the
+          // user explicitly asked to be notified about one time.
+          if ($rootScope.options.notification === 'none' && !watch.temporary) {
             return;
           }
 
-          var oldValue = data.oldValue;
-          var newValue = data.newValue;
-
           if (newValue.jobs) {
             _.forEach(newValue.jobs, function (job, url) {
-              jobNotifier(job, oldValue && oldValue.jobs && oldValue.jobs[url]);
+              jobNotifier(job, oldValue && oldValue.jobs && oldValue.jobs[url], watch);
             });
           } else {
-            jobNotifier(newValue, oldValue);
+            jobNotifier(newValue, oldValue, watch);
           }
         }).catch(function(error) {
           console.error('Error processing notification:', error);
@@ -459,7 +651,7 @@ function initJobs(Jobs, Storage, $rootScope) {
 export const defaultJobData = defaultJobDataService();
 export const jenkins = jenkinsService(defaultJobData);
 export const Jobs = JobsService($q, Storage, jenkins, defaultJobData);
-export const buildNotifier = buildNotifierService($rootScope, Notification);
+export const buildNotifier = buildNotifierService($rootScope, Notification, Jobs);
 export const buildWatcher = buildWatcherService($rootScope, Jobs, buildNotifier);
 
 // Export initialization function
