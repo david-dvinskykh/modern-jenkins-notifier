@@ -83,6 +83,25 @@
     </label>
   </p>
   <p>
+    <b>How to alert:</b>
+    <br>
+    <label>
+      <input type="checkbox" id="sound">
+      Play a sound
+    </label>
+    <br>
+    <label>
+      <input type="checkbox" id="popupWindow">
+      Show a pop-up window with the result
+    </label>
+    <br>
+    <span class="hint">
+      The browser hands notifications to the operating system, which decides
+      whether they appear on screen and whether they make a sound. These two
+      alerts are produced by the extension itself, so they do not depend on it.
+    </span>
+  </p>
+  <p>
     <label><b>Refresh time:</b></label><br>
     <input style="width: 100%;" min="5" max="120" step="5" range-type="s" type="range" id="refreshTime">
     <br>
@@ -97,6 +116,11 @@
   <p id="notificationHint" class="hint hidden"></p>
   <button id="testNotification" type="button">Send a test notification</button>
   <span id="notificationTestResult" class="hint"></span>
+  <p class="hint">
+    Notifications that arrive but never appear on screen are a system setting,
+    not an extension one: allow banners for your browser in the notification
+    settings of Windows or macOS. The pop-up window above works either way.
+  </p>
 </fieldset>
 
 <fieldset>

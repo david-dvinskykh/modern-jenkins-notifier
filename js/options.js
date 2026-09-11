@@ -17,6 +17,7 @@
  */
 
 import { init, Jobs, Notification, $rootScope } from './services.js';
+import { showBuildToast } from './alerts.js';
 
 init();
 
@@ -44,9 +45,14 @@ const notificationTestResultElement = document.getElementById('notificationTestR
 const hostAccessStatusElement = document.getElementById('hostAccessStatus');
 const grantHostAccessButton = document.getElementById('grantHostAccess');
 
+const soundInput = document.getElementById('sound');
+const popupWindowInput = document.getElementById('popupWindow');
+
 const defaultOptions = {
   refreshTime: 60,
   notification: 'all',
+  sound: true,
+  popupWindow: true,
   addJobShortcut: {
     key: 'j',
     shiftKey: true,
@@ -185,10 +191,22 @@ function sendTestNotification() {
     type: 'basic',
     title: 'Modern Jenkins Notifier',
     message: 'Test notification. If you can see this, build results will be shown the same way.',
-    iconUrl: chrome.runtime.getURL('img/icon48.png')
+    iconUrl: chrome.runtime.getURL('img/icon48.png'),
+    soundKind: soundInput.checked ? 'default' : false
   }).then(function () {
     setStatus(notificationTestResultElement, 'Sent. Check your notification centre.', true);
     refreshNotificationStatus();
+    // Check the same alerts a real build would produce.
+    if (popupWindowInput.checked) {
+      showBuildToast({
+        title: 'Test notification',
+        job: 'Modern Jenkins Notifier',
+        message: 'This is how a build result will appear.',
+        status: 'Success',
+        url: '',
+        note: 'Nothing was built, this is only a check.'
+      });
+    }
   }).catch(function (error) {
     setStatus(notificationTestResultElement, 'Failed: ' + error.message, false);
     refreshNotificationStatus();
@@ -259,7 +277,9 @@ function grantHostAccess() {
 function saveOptions() {
   const options = {
     refreshTime: refreshTimeInput.value,
-    notification: document.querySelector('[name=notification]:checked').value
+    notification: document.querySelector('[name=notification]:checked').value,
+    sound: soundInput.checked,
+    popupWindow: popupWindowInput.checked
   };
   
   chrome.storage.local.get({options: defaultOptions}, function(objects) {
@@ -312,6 +332,9 @@ function restoreOptions() {
     document.querySelector('[name=notification]:checked').checked = false;
     document.querySelector('[name=notification][value="' + options.notification + '"]').checked = true;
     refreshTimeSpan.textContent = refreshTimeInput.value = options.refreshTime;
+    // Options stored before these settings existed default to enabled.
+    soundInput.checked = options.sound !== false;
+    popupWindowInput.checked = options.popupWindow !== false;
     
     // Restore shortcut
     if (options.addJobShortcut) {
@@ -348,7 +371,7 @@ document.addEventListener('DOMContentLoaded', () => {
 notificationTestButton.addEventListener('click', sendTestNotification);
 grantHostAccessButton.addEventListener('click', grantHostAccess);
 
-document.querySelectorAll('input[type=radio], #refreshTime').forEach(function (element) {
+document.querySelectorAll('input[type=radio], input[type=checkbox], #refreshTime').forEach(function (element) {
   element.addEventListener('change', saveOptions);
 });
 

@@ -16,6 +16,8 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+import { playNotificationSound, showBuildToast, soundKindForStatus } from './alerts.js';
+
 // Utility functions
 export const _ = {
   forEach: function (obj, iterator) {
@@ -126,7 +128,7 @@ function StorageService($q) {
 //    the user whether notifications actually reach the system.
 const NOTIFICATION_HEALTH_KEY = 'notificationHealth';
 
-function NotificationService($q) {
+function NotificationService($q, $rootScope) {
   var BASE_OPTION_KEYS = ['type', 'title', 'message', 'contextMessage', 'iconUrl'];
   var RICH_OPTIONS = {requireInteraction: true, silent: false, priority: 2};
   var richOptionsSupported = true;
@@ -219,6 +221,17 @@ function NotificationService($q) {
     });
   }
 
+  // The sound is the extension's own doing: the operating system plays nothing
+  // for most notification setups.
+  function announce(options) {
+    if (options.soundKind === false || ($rootScope && $rootScope.options && $rootScope.options.sound === false)) {
+      return;
+    }
+    playNotificationSound(options.soundKind).catch(function (error) {
+      console.warn('Notification sound failed:', error.message);
+    });
+  }
+
   return {
     getPermissionLevel: getPermissionLevel,
     create: async function (notificationId, options) {
@@ -231,6 +244,7 @@ function NotificationService($q) {
         try {
           var id = await createOnce(notificationId, Object.assign({}, plain, RICH_OPTIONS));
           saveHealth({lastSuccessAt: Date.now(), lastError: null});
+          announce(options);
           return id;
         } catch (error) {
           richOptionsSupported = false;
@@ -241,12 +255,14 @@ function NotificationService($q) {
       try {
         var plainId = await createOnce(notificationId, plain);
         saveHealth({lastSuccessAt: Date.now(), lastError: null});
+        announce(options);
         return plainId;
       } catch (error) {
         console.warn('chrome.notifications failed, trying the service worker:', error.message);
         try {
           var swId = await createViaServiceWorker(plain);
           saveHealth({lastSuccessAt: Date.now(), lastError: null});
+          announce(options);
           return swId;
         } catch (fallbackError) {
           saveHealth({lastError: error.message, lastErrorAt: Date.now()});
@@ -259,7 +275,7 @@ function NotificationService($q) {
 
 // Create service instances
 export const Storage = StorageService($q);
-export const Notification = NotificationService($q);
+export const Notification = NotificationService($q, $rootScope);
 
 // Job Data Service
 function defaultJobDataService() {
@@ -549,18 +565,36 @@ function buildNotifierService($rootScope, Notification, Jobs) {
       const notificationId = 'jenkins-' + buildUrl;
       const iconPath = 'img/icon48.png';
 
+      const note = watch.temporary
+        ? 'One-time watch: monitoring of this job stops now.'
+        : '';
+
       const options = {
         type: 'basic',
         title: title + ' - ' + newValue.name,
         message: buildUrl,
-        iconUrl: chrome.runtime.getURL(iconPath)
+        iconUrl: chrome.runtime.getURL(iconPath),
+        soundKind: soundKindForStatus(newValue.status)
       };
 
-      if (watch.temporary) {
-        options.contextMessage = 'One-time watch: monitoring of this job stops now.';
+      if (note) {
+        options.contextMessage = note;
       }
 
       await Notification.create(notificationId, options);
+
+      // The pop-up window is opened from the background only: when the popup
+      // page is the one notifying, the user is already looking at the list.
+      if (typeof window === 'undefined' && $rootScope.options.popupWindow !== false) {
+        await showBuildToast({
+          title: title,
+          job: newValue.name,
+          message: buildUrl,
+          status: newValue.status,
+          url: buildUrl,
+          note: note
+        });
+      }
 
       if (watch.temporary && watch.url && Jobs) {
         await Jobs.remove(watch.url);
@@ -612,7 +646,9 @@ function buildNotifierService($rootScope, Notification, Jobs) {
 function initOptions($rootScope, Storage) {
   $rootScope.options = {
     refreshTime: 60,
-    notification: 'all'
+    notification: 'all',
+    sound: true,
+    popupWindow: true
   };
 
   // Add storage change listener during initialization

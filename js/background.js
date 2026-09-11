@@ -17,6 +17,7 @@
  */
 
 import * as Services from './services.js';
+import { forgetToastWindow } from './alerts.js';
 
 console.log('Background script starting...');
 
@@ -273,6 +274,16 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
         });
     }
 });
+
+// The pop-up window is reused while it is open, so its id must be dropped when
+// the user closes it.
+if (chrome.windows && chrome.windows.onRemoved) {
+    chrome.windows.onRemoved.addListener((windowId) => {
+        forgetToastWindow(windowId).catch(error => {
+            console.error('Error clearing the pop-up window id:', error);
+        });
+    });
+}
 
 // Listen for alarm
 chrome.alarms.onAlarm.addListener(async (alarm) => {

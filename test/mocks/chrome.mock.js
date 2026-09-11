@@ -6,7 +6,9 @@ export const chrome = {
     onMessage: {
       addListener: jest.fn()
     },
-    sendMessage: jest.fn(),
+    sendMessage: jest.fn((message, callback) => {
+      if (typeof callback === 'function') callback();
+    }),
     openOptionsPage: jest.fn()
   },
   storage: {
@@ -67,6 +69,21 @@ export const chrome = {
     create: jest.fn(),
     query: jest.fn(),
     sendMessage: jest.fn()
+  },
+  offscreen: {
+    createDocument: jest.fn(() => Promise.resolve())
+  },
+  windows: {
+    create: jest.fn((createData, callback) => {
+      if (callback) callback({id: 1});
+    }),
+    update: jest.fn(),
+    getLastFocused: jest.fn((options, callback) => {
+      callback({id: 2, left: 0, top: 0, width: 1200, height: 800});
+    }),
+    onRemoved: {
+      addListener: jest.fn()
+    }
   }
 };
 

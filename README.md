@@ -12,12 +12,27 @@ Features:
 ✔ Number of failing, unstable or stable jobs in icon badge  
 ✔ Choose to be notified on every build or on every unstable build  
 ✔ One-time watch: get notified about the next build of a single job, then stop  
+✔ Sound and an on-screen pop-up window with the build result  
 ✔ Modern Manifest V3 support for enhanced security
 
 # Notifications
 
 Build results are delivered as desktop notifications through the browser, which
 hands them to the notification centre of the operating system.
+
+The operating system decides whether such a notification appears on screen and
+whether it makes a sound, and on many setups it does neither. Two alerts are
+therefore produced by the extension itself and can be switched on and off in the
+options page:
+
+- **A sound**, played from an offscreen document, since a Manifest V3 service
+  worker has no way to play audio on its own.
+- **A pop-up window** with the job, the status and a link to the build. It
+  closes on its own after ten seconds, a click opens the build, and several
+  results arriving together share one window.
+
+If you would rather have the system banners themselves, allow notifications for
+your browser in the notification settings of Windows or macOS.
 
 If nothing shows up, open the options page. The **System notifications** section
 reports whether the browser is allowed to show notifications and why the last
